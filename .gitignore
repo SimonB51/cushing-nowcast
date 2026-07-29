@@ -1,0 +1,26 @@
+# Données : jamais versionnées, à aucun stade.
+data/
+
+# Document de conception interne (français, s'adresse à l'agent) — reste en local.
+DESIGN.md
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+.venv/
+venv/
+*.egg-info/
+
+.DS_Store
+
+# NB: outputs/ est volontairement absent de ce fichier — les figures du rapport
+# sont versionnées et affichées dans le README.

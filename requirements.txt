@@ -1,0 +1,15 @@
+pystac-client
+planetary-computer
+rasterio
+rioxarray
+geopandas
+shapely
+xarray
+numpy
+pandas
+scikit-learn
+requests
+matplotlib
+pyyaml
+python-dotenv
+pytest

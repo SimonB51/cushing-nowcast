@@ -1,0 +1,40 @@
+# Cushing Storage Nowcast — configuration centrale.
+# Toutes les valeurs numériques utilisées par le pipeline doivent venir d'ici,
+# jamais en dur dans le code.
+
+aoi:
+  min_lon: -96.86
+  max_lon: -96.66
+  min_lat: 35.92
+  max_lat: 36.07
+
+period:
+  start: "2019-01-01"
+  end: null  # null = aujourd'hui, résolu au runtime
+
+paths:
+  data_raw: "data/raw"
+  data_interim: "data/interim"
+  data_processed: "data/processed"
+  outputs: "outputs"
+  tanks_geojson: "config/tanks.geojson"
+
+eia:
+  series_id: "W_EPC0_SAX_YCUOK_MBBL"
+  # clé API via variable d'environnement EIA_API_KEY, jamais ici
+  publication_lag_days: 5  # vendredi (observation) -> mercredi (publication)
+  max_gap_days: 8          # seuil d'alerte pour un trou dans la série
+
+imagery:
+  collection: "sentinel-2-l2a"
+  bands: ["B02", "B03", "B04", "B08"]
+  scl_band: "SCL"
+  scl_exclude: [3, 8, 9, 10, 11]
+  max_cloud_pct: 40.0
+  min_valid_pixel_frac: 0.7
+
+tanks:
+  # hauteur de paroi supposée par classe de rayon (m) — hypothèse à documenter
+  # et à tester en sensibilité à l'étape 2. Placeholder tant que l'étape 2
+  # n'est pas faite.
+  height_m_default: 14.0

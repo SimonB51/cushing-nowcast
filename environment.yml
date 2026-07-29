@@ -1,0 +1,33 @@
+# Environnement conda du projet.
+#
+#   conda env create -f environment.yml
+#   conda activate cushing
+#
+# Contenu issu de `conda env export --from-history` : uniquement les paquets
+# demandés explicitement, sans épinglage de build ni de version, pour rester
+# portable entre plateformes (l'export complet est figé en osx-arm64).
+#
+# conda-forge est obligatoire : rasterio, rioxarray, geopandas, pystac-client
+# et planetary-computer ne sont pas tous disponibles sur le canal `defaults`.
+#
+# La ligne `prefix:` de l'export a été retirée : elle contient un chemin local.
+name: cushing
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - geopandas
+  - matplotlib
+  - numpy
+  - pandas
+  - planetary-computer
+  - pystac-client
+  - pytest
+  - python-dotenv
+  - pyyaml
+  - rasterio
+  - requests
+  - rioxarray
+  - scikit-learn
+  - shapely
+  - xarray
