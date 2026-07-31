@@ -11,10 +11,14 @@ import logging
 import time
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import requests
 from shapely.geometry import Point, Polygon
 
 logger = logging.getLogger(__name__)
+
+BBL_PER_M3 = 6.2898
 
 # Instance principale overpass-api.de instable (504 "server too busy") au
 # moment du développement (2026-07-27) — utilisation du mirroir lz4.
@@ -133,3 +137,151 @@ def fetch_osm_tanks(aoi: dict) -> gpd.GeoDataFrame:
 
     gdf = gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
     return gdf
+
+
+class InventoryError(RuntimeError):
+    pass
+
+
+def _circumscribed_radius_m(geom) -> float:
+    """Rayon = distance moyenne du centroïde aux sommets.
+
+    Les emprises OSM de Cushing sont des polygones réguliers (392/415 sont des
+    16-gones exacts) : ce sont des cercles dessinés, pas des contours relevés.
+    Pour un polygone régulier inscrit dans le cercle de la cuve, tous les
+    sommets sont à distance R, donc leur distance moyenne au centroïde donne R
+    directement. Passer par l'aire sous-estimerait R de 1,3 % sur un 16-gone.
+    """
+    cx, cy = geom.centroid.x, geom.centroid.y
+    xs, ys = geom.exterior.coords.xy
+    # le dernier point ferme l'anneau et duplique le premier
+    d = np.hypot(np.asarray(xs[:-1]) - cx, np.asarray(ys[:-1]) - cy)
+    return float(d.mean())
+
+
+def assign_height_m(radii_m: np.ndarray, tanks_cfg: dict) -> np.ndarray:
+    """Hauteur de paroi selon le modèle choisi dans settings.yaml.
+
+    `flat`      : une hauteur unique pour toutes les cuves.
+    `by_radius` : grille de hauteurs par classe de rayon.
+
+    Les deux sont des hypothèses de domaine, pas des mesures. Voir le commentaire
+    de la section `tanks` de settings.yaml.
+    """
+    model = tanks_cfg["height_model"]
+
+    if model == "flat":
+        return np.full(len(radii_m), float(tanks_cfg["height_m_flat"]))
+
+    if model == "by_radius":
+        grid = tanks_cfg["height_by_radius"]
+        heights = np.full(len(radii_m), np.nan)
+        for band in grid:
+            bound = band["max_radius_m"]
+            upper = np.inf if bound is None else float(bound)
+            # première bande dont la borne haute n'est pas encore dépassée
+            todo = np.isnan(heights) & (radii_m < upper)
+            heights[todo] = float(band["height_m"])
+        if np.isnan(heights).any():
+            raise InventoryError(
+                f"{int(np.isnan(heights).sum())} cuve(s) hors de toutes les bandes de "
+                "`height_by_radius`. La dernière bande doit avoir max_radius_m: null."
+            )
+        return heights
+
+    raise InventoryError(
+        f"height_model inconnu: {model!r}. Valeurs acceptées: 'flat', 'by_radius'."
+    )
+
+
+def build_tank_inventory(gdf_raw: gpd.GeoDataFrame, tanks_cfg: dict) -> gpd.GeoDataFrame:
+    """Construit l'inventaire exploitable à partir des empreintes OSM brutes.
+
+    `roof_type` reste 'unknown' et `first_seen`/`last_seen` restent nuls : les
+    deux exigent l'imagerie multi-dates de l'étape 3. Ils ne sont pas devinés.
+    """
+    tanks = gdf_raw[gdf_raw.geometry.geom_type == "Polygon"].copy()
+    dropped_geom = len(gdf_raw) - len(tanks)
+
+    tanks = tanks[tanks["man_made"] == "storage_tank"].copy()
+    if tanks.empty:
+        raise InventoryError("Aucune empreinte man_made=storage_tank exploitable.")
+
+    # projection métrique locale, déduite des données plutôt que codée en dur
+    utm = tanks.estimate_utm_crs()
+    proj = tanks.to_crs(utm)
+
+    radii = np.array([_circumscribed_radius_m(g) for g in proj.geometry])
+
+    # contre-vérification : le rayon déduit de l'aire doit être cohérent
+    r_from_area = np.sqrt(proj.area.to_numpy() / np.pi)
+    spread = np.abs(radii - r_from_area) / radii
+    if (spread > 0.05).any():
+        n_bad = int((spread > 0.05).sum())
+        logger.warning(
+            "%d empreinte(s) où rayon-sommets et rayon-aire divergent de plus de 5%% "
+            "(max %.1f%%) — géométries probablement non circulaires.",
+            n_bad, 100 * spread.max(),
+        )
+
+    small = radii < float(tanks_cfg["min_radius_m"])
+    if small.any():
+        logger.warning(
+            "%d empreinte(s) sous min_radius_m=%.1f m écartée(s).",
+            int(small.sum()), float(tanks_cfg["min_radius_m"]),
+        )
+    keep = ~small
+    tanks, proj, radii = tanks[keep], proj[keep], radii[keep]
+
+    heights = assign_height_m(radii, tanks_cfg)
+    volume_m3 = np.pi * radii**2 * heights
+    centroids = proj.geometry.centroid.to_crs("EPSG:4326")
+
+    inv = gpd.GeoDataFrame(
+        {
+            "tank_id": [f"osm_{t}_{i}" for t, i in zip(tanks["osm_type"], tanks["osm_id"])],
+            "centroid_lon": centroids.x.to_numpy(),
+            "centroid_lat": centroids.y.to_numpy(),
+            "radius_m": radii.round(2),
+            "height_m": heights.round(2),
+            "roof_type": "unknown",       # étape 4 : variance temporelle intra-cuve
+            "capacity_kbbl": (volume_m3 * BBL_PER_M3 / 1000).round(3),
+            "first_seen": pd.NaT,         # étape 3 : première scène exploitable
+            "last_seen": pd.NaT,
+            "notes": f"OSM footprint, height model={tanks_cfg['height_model']}",
+        },
+        geometry=tanks.geometry.to_numpy(),
+        crs="EPSG:4326",
+    )
+
+    if inv["tank_id"].duplicated().any():
+        dup = inv.loc[inv["tank_id"].duplicated(), "tank_id"].tolist()
+        raise InventoryError(f"tank_id dupliqué(s): {dup[:5]}")
+
+    logger.info(
+        "Inventaire: %d cuves retenues (%d géométries non polygonales et %d "
+        "non-storage_tank écartées en amont).",
+        len(inv), dropped_geom, len(gdf_raw) - dropped_geom - len(tanks),
+    )
+    return inv
+
+
+def capacity_report(radii_m: np.ndarray, tanks_cfg: dict, top_frac: float = 0.10) -> dict:
+    """Capacité totale et concentration, pour un modèle de hauteur donné.
+
+    `top_decile_share` est la grandeur qui compte : la calibration contre l'EIA
+    absorbe toute erreur multiplicative constante sur H, donc seule la
+    pondération relative entre cuves influence l'indice agrégé.
+    """
+    heights = assign_height_m(radii_m, tanks_cfg)
+    cap = np.pi * radii_m**2 * heights * BBL_PER_M3 / 1000  # kbbl
+
+    order = np.argsort(cap)[::-1]
+    n_top = max(1, int(round(top_frac * len(cap))))
+    return {
+        "model": tanks_cfg["height_model"],
+        "n_tanks": len(cap),
+        "total_kbbl": float(cap.sum()),
+        "n_top": n_top,
+        "top_decile_share": float(cap[order[:n_top]].sum() / cap.sum()),
+    }

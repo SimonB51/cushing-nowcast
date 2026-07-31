@@ -34,7 +34,48 @@ imagery:
   min_valid_pixel_frac: 0.7
 
 tanks:
-  # hauteur de paroi supposée par classe de rayon (m) — hypothèse à documenter
-  # et à tester en sensibilité à l'étape 2. Placeholder tant que l'étape 2
-  # n'est pas faite.
-  height_m_default: 14.0
+  # --- Hauteur de paroi : deux hypothèses de domaine, sélectionnables ---
+  #
+  # Fait de construction (sourçable) : les réservoirs API 650 sont assemblés en
+  # viroles horizontales de tôle de 8 pieds (2,44 m). Les hauteurs de paroi
+  # réelles sont donc en pratique des multiples de 8 pieds. Les deux modèles
+  # ci-dessous s'appuient sur ce fait.
+  #
+  # Hypothèse (NON sourcée) : l'association rayon -> hauteur du modèle
+  # by_radius. Les grandes cuves sont généralement plus hautes, mais la grille
+  # exacte est une supposition, pas une donnée. À traiter comme telle.
+  #
+  # IMPORTANT — pourquoi le total importe peu : la calibration de l'étape 5
+  # contre l'EIA absorbe toute erreur MULTIPLICATIVE CONSTANTE sur H (elle part
+  # dans le coefficient de régression). Seule la PONDÉRATION RELATIVE entre
+  # cuves a un effet matériel sur l'indice agrégé.
+  height_model: "flat"          # flat | by_radius
+  height_m_flat: 14.63          # 48 pieds, hauteur de paroi courante pour du brut
+  height_by_radius:             # bornes en rayon (m), hauteurs en multiples de 8 pieds
+    - {max_radius_m: 15.0, height_m: 9.75}    # 32 ft
+    - {max_radius_m: 25.0, height_m: 12.19}   # 40 ft
+    - {max_radius_m: 35.0, height_m: 14.63}   # 48 ft
+    - {max_radius_m: null, height_m: 17.07}   # 56 ft — null = pas de borne haute
+
+  min_radius_m: 5.0             # en deçà : pas une cuve de stockage de brut
+
+  # --- Contrôle de cohérence obligatoire (DESIGN §6) ---
+  #
+  # VÉRIFIÉ contre la source primaire le 2026-07-29 :
+  #   https://www.eia.gov/petroleum/storagecapacity/
+  #   fichier: https://www.eia.gov/petroleum/storagecapacity/crudeoilstorage.xlsx
+  #   feuille "Cushing", colonne 2024-03-01 (dernier point publié dans ce fichier)
+  #
+  # L'EIA publie DEUX capacités pour Cushing, et la distinction est structurante :
+  #   Net Available Shell = 97 742 kbbl  (= fonds de cuve + working + contingence)
+  #   Working             = 78 410 kbbl  (exclut fonds de cuve et contingence)
+  #   rapport shell/working = 1,247
+  #
+  # Notre calcul pi*r^2*H est un volume géométrique de cylindre : il produit une
+  # SHELL capacity. C'est donc à la shell qu'il faut le comparer, et le ratio
+  # attendu est ~1,00. Le comparer à la working ferait apparaître un faux excédent
+  # de +25 %.
+  capacity_reference_shell_mbbl: 97.742   # millions de barils (pas des milliers)
+  capacity_reference_working_mbbl: 78.410 # pour mémoire, NE PAS utiliser pour le contrôle
+  capacity_reference_asof: "2024-03-31"
+  capacity_tolerance_factor: 2.0

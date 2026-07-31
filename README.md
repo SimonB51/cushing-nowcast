@@ -122,9 +122,12 @@ nothing.
 
 - [x] **EIA ground truth** — 394 weekly observations, 2019 to present, no
       duplicates, no gap beyond 8 days, publication lag verified at 5 days
-- [x] **Tank inventory, first pass** — 416 candidate tanks from OpenStreetMap
-      Overpass, visually checked against a recent Sentinel-2 scene
-- [ ] Tank geometry, roof type classification, capacity cross-check
+- [x] **Tank inventory, first pass** — 416 OpenStreetMap elements from Overpass,
+      415 storage-tank footprints, visually checked against a recent Sentinel-2 scene
+- [x] **Tank geometry and capacity cross-check** — radius measured from footprint
+      vertices, wall height as a documented assumption, 98.4 Mbbl total shell
+      capacity against 97.7 Mbbl reported by the EIA (ratio 1.01)
+- [ ] Roof type classification — needs the multi-date imagery of the next stage
 - [ ] Sentinel-2 acquisition and cloud masking
 - [ ] Signal extraction and solar normalisation
 - [ ] Calibration and out-of-sample validation
@@ -138,6 +141,10 @@ nothing.
 
 *First-pass inventory: 416 OpenStreetMap footprints on Sentinel-2, 27 July 2026 — the inset shows both the alignment and the tanks OSM still misses.*
 
+![Tank inventory coloured by capacity, and the cumulative capacity curve](outputs/tank_inventory.png)
+
+*Built inventory: 415 tanks with computed radius and shell capacity — the top 10% hold only 19–22% of it, so the index is mutualised rather than driven by a few large tanks.*
+
 ## Running it
 
 ```bash
@@ -150,10 +157,11 @@ cp .env.example .env                    # add your free EIA API key
 python scripts/01_fetch_eia.py
 python scripts/02_build_inventory.py
 python scripts/02b_osm_coverage_figure.py   # regenerates the coverage figure above
+python scripts/02c_inventory_figure.py      # regenerates the inventory figure above
 ```
 
-Run them in order: `02b` reads the tank footprints written by `02`, and the tests
-skip themselves until `01` has produced the ground truth CSV.
+Run them in order: `02b` and `02c` both read what `02` writes, and the ground
+truth tests skip themselves until `01` has produced the CSV.
 
 A free EIA API key is available at
 [eia.gov/opendata](https://www.eia.gov/opendata/).
@@ -161,12 +169,15 @@ A free EIA API key is available at
 ## Layout
 
 ```
-config/          AOI, dates, thresholds
-src/cushing/     eia, inventory  ·  imagery, signal, aggregate, validate to come
+config/          AOI, dates, thresholds, tank inventory (tanks.geojson)
+src/cushing/     eia, inventory, imagery  ·  signal, aggregate, validate to come
 scripts/         one runnable script per stage
 outputs/         figures
 tests/
 ```
+
+`imagery` currently covers scene selection only; cloud masking, solar metadata
+and local caching arrive with the acquisition stage.
 
 Modules and artefacts listed as "to come" track the unchecked items under
 [Progress](#progress); they are not in the repository yet.

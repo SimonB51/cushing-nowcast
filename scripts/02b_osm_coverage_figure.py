@@ -9,56 +9,30 @@ conservées ici).
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
 from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
-import planetary_computer
-import pystac_client
-import rioxarray
 import yaml
-from shapely.geometry import box
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from cushing.imagery import (  # noqa: E402
+    ImageryError,
+    load_rgb_clip,
+    open_catalog,
+    pick_best_scene,
+    recent_window,
+)
+
 MAX_CLOUD_PCT = 20.0
-# Fenêtre glissante : la figure doit rester reproductible dans le temps, pas
-# dépendre d'une date figée dans le code.
 SEARCH_DAYS_BACK = 120
-SEARCH_WINDOW = f"{(date.today() - timedelta(days=SEARCH_DAYS_BACK)).isoformat()}/{date.today().isoformat()}"
 
 # Les figures sont légendées en anglais : elles sont affichées dans le README public.
 FOOTPRINT_COLOR = "#eb6834"
 INK = "#0b0b0b"
 INK_SOFT = "#52514e"
-
-
-def pick_best_scene(catalog, bbox: list[float]):
-    aoi_box = box(*bbox)
-    search = catalog.search(
-        collections=["sentinel-2-l2a"],
-        bbox=bbox,
-        datetime=SEARCH_WINDOW,
-        query={"eo:cloud_cover": {"lt": MAX_CLOUD_PCT}},
-    )
-    items = list(search.items())
-    if not items:
-        raise RuntimeError(f"Aucune scène Sentinel-2 avec <{MAX_CLOUD_PCT}% de nuages sur {SEARCH_WINDOW}.")
-
-    scored = []
-    for item in items:
-        from shapely.geometry import shape
-        geom = shape(item.geometry)
-        coverage = geom.intersection(aoi_box).area / aoi_box.area
-        scored.append((coverage, item.datetime, item))
-
-    # priorité: couvre bien l'AOI, puis le plus récent
-    scored.sort(key=lambda t: (t[0] > 0.9, t[1]), reverse=True)
-    best_coverage, best_dt, best_item = scored[0]
-    print(f"Scène choisie: {best_item.id} ({best_dt.date()}), couverture AOI={best_coverage:.1%}, "
-          f"nuages={best_item.properties.get('eo:cloud_cover'):.1f}%")
-    return best_item
 
 
 def densest_window(tanks: gpd.GeoDataFrame, cell_m: float = 1000.0,
@@ -84,15 +58,20 @@ def main() -> None:
     aoi = settings["aoi"]
     bbox = [aoi["min_lon"], aoi["min_lat"], aoi["max_lon"], aoi["max_lat"]]
 
-    catalog = pystac_client.Client.open(STAC_URL, modifier=planetary_computer.sign_inplace)
-    item = pick_best_scene(catalog, bbox)
+    try:
+        catalog = open_catalog()
+        item, coverage = pick_best_scene(
+            catalog, bbox, recent_window(SEARCH_DAYS_BACK), MAX_CLOUD_PCT
+        )
+        rgb_clip, raster_crs = load_rgb_clip(item, bbox)
+    except ImageryError as e:
+        print(f"ARRÊT: {e}")
+        sys.exit(1)
 
-    rgb = rioxarray.open_rasterio(item.assets["visual"].href)
-    aoi_proj = gpd.GeoSeries([box(*bbox)], crs="EPSG:4326").to_crs(rgb.rio.crs)
-    rgb_clip = rgb.rio.clip_box(*aoi_proj.total_bounds)
+    print(f"Scène choisie: {item.id} ({item.datetime.date()}), couverture AOI={coverage:.1%}")
 
     tanks_path = REPO_ROOT / "data" / "interim" / "osm_tanks_raw.geojson"
-    tanks = gpd.read_file(tanks_path).to_crs(rgb.rio.crs)
+    tanks = gpd.read_file(tanks_path).to_crs(raster_crs)
 
     fig, ax = plt.subplots(figsize=(9, 9))
     rgb_clip.plot.imshow(ax=ax)
