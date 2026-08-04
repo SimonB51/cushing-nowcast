@@ -3,9 +3,10 @@
 Estimating weekly crude oil inventories at Cushing, Oklahoma from free satellite
 imagery, benchmarked against the EIA weekly series.
 
-**Status:** in progress. Ground truth pipeline and tank inventory are working;
-imagery, signal extraction and validation are being built. See
-[Progress](#progress) below.
+**Status:** complete, with a negative result. The full pipeline runs end to end
+over 2019–2026. It does not beat a naive forecast, and the reason is measured
+rather than guessed: the weekly signal is **1.3% of a Sentinel-2 pixel**. See
+[Results](#results).
 
 ---
 
@@ -115,8 +116,14 @@ nothing.
   so the missing weeks are not a random subsample.
 - **Inventory completeness.** A permanently missing tank is absorbed by
   calibration; a tank built or decommissioned mid-period breaks the relationship.
-- **Resolution.** Commercial operators use sub-metre imagery and, in some cases,
-  drone-based infrared. This pipeline is resolution-limited by construction.
+- **Resolution.** This turned out to be the binding constraint, not one
+  limitation among several. Quantified under [Results](#results).
+- **Roof type was never resolved.** Fixed-roof tanks carry no fill signal and
+  should be excluded. Detection by temporal variance was attempted and is
+  inconclusive: the per-tank standard deviation is tightly unimodal
+  (q10 = 0.063, q90 = 0.105), with no separation between the two populations —
+  consistent with a regime where no tank carries much fill signal to begin with.
+  Reported as unresolved rather than papered over with a threshold.
 
 ## Progress
 
@@ -127,11 +134,15 @@ nothing.
 - [x] **Tank geometry and capacity cross-check** — radius measured from footprint
       vertices, wall height as a documented assumption, 98.4 Mbbl total shell
       capacity against 97.7 Mbbl reported by the EIA (ratio 1.01)
-- [ ] Roof type classification — needs the multi-date imagery of the next stage
-- [ ] Sentinel-2 acquisition and cloud masking
-- [ ] Signal extraction and solar normalisation
-- [ ] Calibration and out-of-sample validation
-- [ ] Error decomposition
+- [x] **Sentinel-2 acquisition** — 1295 STAC items reduce to 560 distinct
+      acquisitions after removing 727 MGRS tile duplicates; 339 clear enough to
+      use, covering 273 of 395 EIA weeks (69.1%)
+- [x] **Signal extraction** — 114,540 tank-scene observations, 415 tanks,
+      276 dates, with two silent data defects found and fixed (see below)
+- [x] **Calibration and out-of-sample validation** — chronological splits,
+      nuisance regression fitted on training folds only
+- [ ] Roof type classification — attempted via temporal variance, inconclusive
+      (see limitations)
 
 ![Weekly Cushing crude oil ending stocks reported by the EIA, 2019 to present](outputs/eia_cushing_series.png)
 
@@ -144,6 +155,65 @@ nothing.
 ![Tank inventory coloured by capacity, and the cumulative capacity curve](outputs/tank_inventory.png)
 
 *Built inventory: 415 tanks with computed radius and shell capacity — the top 10% hold only 19–22% of it, so the index is mutualised rather than driven by a few large tanks.*
+
+## Results
+
+The pipeline does not work. Reported in full, because a proxy that fails a fair
+test is worth more than one that passes a rigged one.
+
+| Metric | Value | Reading |
+|---|---|---|
+| `corr_weekly_change` | **−0.159** | the metric that matters — no relationship |
+| `directional_accuracy` | 43.6% (z = −1.3) | not distinguishable from chance |
+| `mae_mbbl` | 1.195 | |
+| `mae_naive_mbbl` | 1.124 | forecasting "no change" |
+| `mae_vs_naive` | **1.063** | worse than doing nothing |
+| `coverage_pct` | 69.1% | EIA weeks with a usable scene |
+
+110 out-of-sample weeks, chronological splits only.
+
+![Out-of-sample predictions show no relationship; the weekly signal is 1.3% of a pixel](outputs/validation.png)
+
+*Left: predictions cluster near zero with no diagonal structure. Right: why — the shadow displacement to be detected, on a log scale.*
+
+### Why it fails, quantified
+
+The median weekly EIA change is 853 kbbl against 98.4 Mbbl of inventory
+capacity: **0.87% of fill per week**. On a 14.63 m wall that is 12.7 cm of newly
+exposed steel, casting **0.013 of a Sentinel-2 pixel** of extra shadow at a 45°
+sun.
+
+This is not a tuning problem. No filter recovers it — restricting to large
+tanks, to high-variance tanks, or to near-perfect pixel coverage all leave the
+correlation between +0.04 and +0.06. Sub-metre imagery is not a luxury for this
+problem; it is the threshold below which the measurement does not exist. That is
+what commercial providers are buying.
+
+### The solar confounder is real and was removed
+
+![Tank brightness rises with solar elevation, independent of fill](outputs/solar_confounder.png)
+
+*Reflectance rises by 0.095 from winter to summer sun at a fill level we have no reason to think changed (r = +0.29, 114,540 observations). Uncorrected, this alone would produce a flattering and entirely spurious correlation with the seasonal EIA series.*
+
+### Two silent data defects
+
+Both produce plausible wrong numbers rather than errors, and neither is
+advertised by the STAC catalogue.
+
+**Processing baseline 04.00** (25 Jan 2022) introduced `BOA_ADD_OFFSET = -1000`.
+Measured on clear October scenes: B04 median 897/766/709 DN before, 2136/1710/1952
+after. Uncorrected, that is a +0.1 reflectance step in the middle of the study
+period, which calibration would read as a change in stock level.
+
+**The SCL cloud classifier reads bright tank roofs as cloud.** On a scene with
+0.14% cloud cover it masked 86% of tank pixels — but only 30% at 20 m from the
+footprints, 2.8% at 50 m and 1.4% at 150 m. That decay with distance is a
+per-pixel classification error, not a cloud; a real cloud at 10 m resolution
+masks a contiguous blob. Applying SCL inside footprints drops the *brightest*
+tanks preferentially, making the missing data correlated with the quantity being
+measured. Cloudiness is now judged on a 50–150 m ring around each tank, where
+SCL is reliable, and never on the tank itself. Fixing this recovered one test
+scene from 21 usable tanks to 415.
 
 ## Running it
 
@@ -158,6 +228,11 @@ python scripts/01_fetch_eia.py
 python scripts/02_build_inventory.py
 python scripts/02b_osm_coverage_figure.py   # regenerates the coverage figure above
 python scripts/02c_inventory_figure.py      # regenerates the inventory figure above
+
+python scripts/03_scene_inventory.py        # STAC metadata only, no pixels
+python scripts/04_extract_signal.py         # ~15 min, resumable
+python scripts/04b_confounder_figure.py
+python scripts/05_validate.py               # the metrics table above
 ```
 
 Run them in order: `02b` and `02c` both read what `02` writes, and the ground
@@ -170,14 +245,11 @@ A free EIA API key is available at
 
 ```
 config/          AOI, dates, thresholds, tank inventory (tanks.geojson)
-src/cushing/     eia, inventory, imagery  ·  signal, aggregate, validate to come
+src/cushing/     eia, inventory, imagery, signal
 scripts/         one runnable script per stage
-outputs/         figures
-tests/
+outputs/         figures and validation metrics
+tests/           21 tests
 ```
-
-`imagery` currently covers scene selection only; cloud masking, solar metadata
-and local caching arrive with the acquisition stage.
 
 Modules and artefacts listed as "to come" track the unchecked items under
 [Progress](#progress); they are not in the repository yet.

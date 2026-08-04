@@ -1,0 +1,2 @@
+n_test_weeks,corr_weekly_change,directional_accuracy,mae_mbbl,mae_naive_mbbl,mae_vs_naive,dir_acc_z,median_weekly_change_kbbl,fill_change_pct,wall_exposed_cm,shadow_px_at_45deg
+110,-0.15915179806131374,0.43636363636363634,1.1953873881069916,1.1242818181818182,1.0632453258384673,-1.3348476249438297,853.0,0.8666654420233535,12.679315416801662,0.012679315416801663
