@@ -13,6 +13,7 @@ import logging
 from datetime import date, timedelta
 
 import geopandas as gpd
+import pandas as pd
 import planetary_computer
 import pystac_client
 import rioxarray  # noqa: F401  (enregistre l'accesseur .rio)
@@ -64,6 +65,72 @@ def pick_best_scene(catalog, bbox: list[float], window: str, max_cloud_pct: floa
         item.id, dt.date(), 100 * coverage, item.properties.get("eo:cloud_cover", float("nan")),
     )
     return item, coverage
+
+
+def search_scenes(catalog, bbox: list[float], start: str, end: str) -> list:
+    """Tous les items Sentinel-2 L2A intersectant `bbox` sur la période.
+
+    Aucun filtre nuage ici : le taux de rejet est un résultat à mesurer, pas une
+    donnée à écarter en silence. Le filtrage se fait en aval, explicitement.
+    """
+    search = catalog.search(
+        collections=[COLLECTION], bbox=bbox, datetime=f"{start}/{end}"
+    )
+    items = list(search.items())
+    if not items:
+        raise ImageryError(f"Aucune scène {COLLECTION} sur {bbox} entre {start} et {end}.")
+    return items
+
+
+def eia_week_ending(ts: pd.Timestamp) -> pd.Timestamp:
+    """Vendredi de fin de semaine EIA auquel une acquisition se rattache.
+
+    Règle d'intégrité temporelle du DESIGN §9 : le chiffre EIA daté du vendredi V
+    ne peut être prédit qu'avec des images acquises AU PLUS TARD le vendredi V.
+    On rattache donc chaque scène au premier vendredi >= sa date d'acquisition.
+    Une image du samedi appartient à la semaine suivante, jamais à celle qui
+    vient de se clore.
+    """
+    # lundi=0 ... vendredi=4 ... dimanche=6
+    days_ahead = (4 - ts.weekday()) % 7
+    return (ts.normalize() + pd.Timedelta(days=days_ahead)).normalize()
+
+
+def scene_metadata(items: list, bbox: list[float]) -> pd.DataFrame:
+    """Métadonnées exploitables, une ligne par item STAC.
+
+    Les angles solaires sont OBLIGATOIRES (DESIGN §7) : sans eux la correction du
+    confondant saisonnier est impossible. Un item qui en manque est signalé.
+    """
+    frame_box = box(*bbox)
+    rows = []
+    for it in items:
+        props = it.properties
+        zenith = props.get("s2:mean_solar_zenith")
+        azimuth = props.get("s2:mean_solar_azimuth")
+        ts = pd.Timestamp(it.datetime).tz_localize(None)
+        rows.append({
+            "item_id": it.id,
+            "datetime": ts,
+            "acquisition_date": ts.normalize(),
+            "eia_week_ending": eia_week_ending(ts),
+            "mgrs_tile": props.get("s2:mgrs_tile"),
+            "relative_orbit": props.get("sat:relative_orbit"),
+            "cloud_cover_pct": props.get("eo:cloud_cover"),
+            "sun_elevation_deg": None if zenith is None else 90.0 - zenith,
+            "sun_azimuth_deg": azimuth,
+            "frame_coverage": shape(it.geometry).intersection(frame_box).area / frame_box.area,
+        })
+
+    df = pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
+
+    missing = df["sun_elevation_deg"].isna()
+    if missing.any():
+        logger.warning(
+            "%d item(s) sans métadonnées solaires — inutilisables pour l'étape 4: %s",
+            int(missing.sum()), df.loc[missing, "item_id"].head(3).tolist(),
+        )
+    return df
 
 
 def load_rgb_clip(item, bounds_4326: list[float]):

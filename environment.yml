@@ -21,6 +21,7 @@ dependencies:
   - numpy
   - pandas
   - planetary-computer
+  - pyarrow
   - pystac-client
   - pytest
   - python-dotenv
@@ -29,5 +30,6 @@ dependencies:
   - requests
   - rioxarray
   - scikit-learn
+  - scipy
   - shapely
   - xarray

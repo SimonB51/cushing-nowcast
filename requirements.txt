@@ -1,3 +1,4 @@
+pyarrow
 pystac-client
 planetary-computer
 rasterio
@@ -8,6 +9,7 @@ xarray
 numpy
 pandas
 scikit-learn
+scipy
 requests
 matplotlib
 pyyaml
